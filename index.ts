@@ -3,45 +3,10 @@ import OpenAI from 'openai';
 import dotenv from 'dotenv';
 import cors from 'cors';
 
-import { DeviceInterface } from 'magichome-core';
+import { ControllerGenerator } from 'magichome-platform';
 dotenv.config();
-let instructionsSent = false;
-
-const deviceInterface = new DeviceInterface(
-	process.env.OFFICE_LIGHT_IP as string
-);
-
 let currlightStates = {
-	lightStates: [
-		{
-			state: [35, 0, 0, 0, 0, 0, 22, 29],
-			name: 'Ceiling Light',
-			id: '001',
-			room: 'office',
-            hasCCT: true
-		},
-		{
-			state: [35, 0, 0, 0, 0, 0, 48, 27],
-			name: 'Window Light',
-			id: '002',
-			room: 'office',
-            hasCCT: true
-		},
-		{
-			state: [35, 0, 0, 0, 0, 0, 48, 27],
-			name: 'Zacks Light',
-			id: '003',
-			room: 'bedroom',
-            hasCCT: true
-		},
-		{
-			state: [35, 0, 0, 0, 0, 0, 48, 27],
-			name: 'Ceiling Light',
-			id: '004',
-			room: 'kitchen',
-            hasCCT: true
-		},
-	],
+	lightStates: [],
 	regions: [
 		{
 			name: 'second floor',
@@ -49,173 +14,201 @@ let currlightStates = {
 		},
 		{
 			name: 'first floor',
-			rooms: ['kitchen'],
+			rooms: ['test room'],
 		},
 	],
 };
+const controllerGenerator = new ControllerGenerator();
+
+let controllers = new Map<string, any>();
+function init() {
+	setupControllers().then((lightStates) => {
+		currlightStates.lightStates = lightStates;
+		console.log('lightStates', JSON.stringify(currlightStates));
+		startServer();
+	});
+}
+
+async function setupControllers() {
+	controllers = await controllerGenerator.discoverCompleteControllers();
+
+	const lightStates = controllerGenerator.controllerListToSimpleList(
+		controllers
+	) as any;
+	return lightStates;
+}
+
+init();
+
+console.log(JSON.stringify(currlightStates));
 
 const openai = new OpenAI({
 	organization: 'org-bk09CWfxrbtm1FOB2cqXq4Ra',
 	apiKey: process.env.API_KEY,
 });
 
-interface IColorHSV {
-	hue: number; //0-360
-	saturation: number; //0-100
-	value: number; //0-100
-	isOn: boolean;
-}
+/*
 
-// async function sendToOpenAI(userInstruction: string) {
-// 	return openai.chat.completions
-// 		.create({
-// 			model: 'gpt-3.5-turbo-0125',
-// 			messages: [
-// 				{
-// 					role: 'system',
-// 					content: `
-//     Background:
-//         You are given an array of ints: "lightState", where each element represents specific data about a light's state and device metadata in sequence:
-//         [unused, controllerHardwareVersion, isOn = (35 ? true : false), unused, unused, unused, red, green, blue, warmWhite, controllerFirmwareVersion, coldWhite, unused, unused]
+                 Background Information:
 
-//     User Interpretation:
-//         The user will give instructions to change the light's state.
-//         On / Off:
-//             If any color value (red, green, blue, warmWhite, coldWhite) is greater than 1, turn the light on.
-//             Only turn light off if the user explicitly says to do so, even if the color values are all 0.
-//             If the user instructs to turn the light off, do not change any of the color values unless the user also instructs to do so.
-//         Color:
-//             Changing colors:
-//                 If the user instructs to change or set the light to a specific color, then do not keep other color values.
-//                 Keep in mind a user-defined color name may represent multiple color values.
-//                 If the user instructs to "add" or "increase" a color, keep all other color values the same and only adjust the specified color value.
-//                     If not specified, assume the user wants to add or increase the color value by 20%.
-//         Brightness:
-//             For the word "dim", "brighten", or any synonyms, adjust the output of each color value by the same percentage. Do not exceed or go below the maximum or minimum value for each color.
+    Objective: Carefully interpret lighting control instructions. Ensure responses accurately reflect changes for lights in specified rooms or regions. Avoid assumptions and maintain precision.
+    Data Structure:
+        lightStates: Array of light objects, each with:
+            state: Array of 6 integers (isOn, red, green, blue, warmWhite, coldWhite).
+            name: Light's name.
+            id: Light's unique identifier.
+            room: Room location.
+        regions: Array of region objects, each with:
+            name: Region's name.
+            rooms: Array of rooms in the region.
 
-//     Expected Output:
-//         According to the user's instruction, respond with the following JSON:
-//         {"red": number [0-255], "green": number [0-255], "blue": number [0-255], "warmWhite": number [0-255], "coldWhite": number [0-255], "isOn": [0,1], "updatedArr": lightState (where "updatedArr" is the original lightState with the updated color values)}
-//     `,
-// 				},
-// 				{
-// 					role: 'user',
-// 					content: `{
-//                     "lightState": ${JSON.stringify(currlightState)},
-//                     "userInstruction": "${userInstruction}"
-//                 }`,
-// 				},
-// 			],
-// 		})
-// 		.then(async (response) => {
-// 			const messageContent = response.choices[0].message.content as string;
+User Instruction Handling:
 
-// 			const messageContentJSON = await JSON.parse(messageContent);
-// 			console.log(messageContentJSON);
-// 			const arr = messageContentJSON['updatedArr'];
-// 			deviceInterface.arrayToCommand(arr);
-// 			currlightState = arr;
-// 			return messageContentJSON;
-// 		})
-// 		.catch((error) => {
-// 			console.log(error);
-// 		});
-// }
+    Interpret instructions for changing light states in rooms or regions.
+    Apply changes to all lights within the specified scope.
+    Handle instructions based on keywords and context.
+
+Specific Instructions:
+
+    isOn:
+        Turn on if any color value is > 1.
+        Turn off only if explicitly stated.
+        Output isOn as 35 (on) or 70 (off).
+    Color:
+        Set: Change to a specific color, removing other colors.
+        Add: Adjust a color value, keeping others constant.
+        Brightness Adjustments: Handle "Too Dark" or "Too Bright" instructions.
+        CCT: Listen for "warm white". If so, set the warmWhite (the 5th integer in the array) value. Do not use the RGB values or coldWhite in this instance!
+    Brightness:
+        Adjust all colors uniformly based on "dim" or "brighten" instructions.
+
+Expected Output:
+
+    Respond with a JSON array of light objects reflecting the updated state, including all lights affected by the instruction, regardless of state change.
+
+Example Output Structure:
+
+json
+
+// [
+//   {
+//     "state": [/* Updated state array */ //],
+//     "name": "Light Name",
+//     "id": "Light ID",
+//     "room": "Room Name"
+//   }
+// ]
 
 async function sendToOpenAI(userInstruction: string) {
 	// Determine messages to send based on whether instructions have been sent
-
 	// Update the flag to true after the first call
 
 	// Send the messages to OpenAI
 	return openai.chat.completions
 		.create({
 			model: 'gpt-3.5-turbo-0125',
+			// temperature: 0,
 			messages: [
 				// If instructions haven't been sent, include both the system and user's message
 				{
 					role: 'system',
-					content: `
-        Background:
-            You are provided a JSON object with the following structure:
-                - lightStates: an array of objects representing the state of each light in the user's home. Each object contains the following properties:
-                    - state: an array of 8 integers representing the light's state and device metadata in sequence as follows:
-                        [isOn, red, green, blue, warmWhite, coldWhite, controllerHardwareVersion, controllerFirmwareVersion]
-                    - name: a string representing the name of the light. The user will refer to the light by this name.
-                    - id: a string representing the light's unique identifier. You will use this to identify the light in the response.
-                    - room: a string representing the room where the light is located.
-                - regions: an array of objects representing the regions of the user's home. Use regions to which groups of lights are affected by the user's instructions.
-                    If the user's instruction affects a region, the response should include the updated state of all lights in that region.
-                Each region object contains the following properties:
-                    - name: a string representing the name of the region.
-                    - rooms: an array of strings representing the rooms in the region.
-            If a user does not speciify a region, room, or light by name, assume the user is referring to all lights in the lightStates array in every room and region.
+					content: `                 
+Objective:
+You are tasked with interpreting instructions for smart home lighting control, focusing on adjusting the color and state of lights based on specific user requests. Your response must be a detailed JSON object that not only outlines the changes to each light but also includes any necessary explanations or rationale for these changes.
 
-        User Interpretation:
-            The user will give instructions to change the state of a region, room, or light. They may not refer to a specific name but a similar name or description.
-            isOn:
-                Complex scenarios:
-                    If any color value (red, green, blue, warmWhite, coldWhite) is greater than 1, turn the light on.
-                    Only turn light off if the user explicitly says to do so, even if the color values are all 0.
-                    If the user instructs to turn the light off, do not change any of the color values unless the user also instructs to do so.
-                Values: Be sure to output the new isOn state of the light as 35 or 70 in the response.
-                    35: on
-                    70: off
-            Color:
-                Changing colors
-                    Actions:
-                        Set:
-                            If the user instructs to change or set the light *to* a specific color, then do not keep other color values.
-                            Keep in mind a user-defined color name may represent multiple color values.
-                        Add:
-                            If the user instructs to "add" or "increase" a color, keep all other color values the same and only adjust the specified color value.
-                            If not specified, assume the user wants to add or increase the color value by 25%.
-                        "Too Dark" or "Too Bright": The user will use these phrases or similar to indicate the light is too dark or too bright.
-                            "Too Dark":
-                                If any color value is greater than 1, multiply that color value by 2 or add 100, whichever is greater.
-                                If all color values are 0:
-                                    If the light "hasCCT"
-                                        set the warmWhite value to 200
-                                    If the light does not "hasCCT"
-                                        set red, green, and blue to 200
-                            "Too Bright":
-                                If any color value is greater than 1, divide that color value by 2 or subtract 50, whichever is greater.
-                    Notes:
-                        Lights can have up to 5 color types: red, green, blue, warmWhite, and coldWhite. Keep that in mind when interpreting the user's instructions.
-                        It is possible that the user will refer to "white" as a color. In this case, look at the current state of the light to determine if the user is referring to warmWhite, coldWhite, or both.
-            Brightness:
-                For the word "dim", "brighten", or any synonyms, adjust the output of each color value by the same percentage. Do not exceed the maximum or go below the minimum value for any color.
-        
-        Expected Output:
-            According to the user's instruction, respond with the following JSON for each of the lights where a change has been made. Do not include lights where no change has been made: 
-            [
-                {
-                    "state": state (where "state" is the original state with the updated color and isOn values)
-                    "name": name (where "name" is the original name)
-                    "id": id (where "id" is the original id),
-                    "room": room (where "room" is the original room)
-                }
-            ]       
-        `,
+Input Data Structure:
+
+    Light States: An array of light objects, each with:
+        A state array containing six integers with a range between 0 - 255 (isOn, red, green, blue, warmWhite, coldWhite).
+        A name identifying the light.
+        An id identifying the light.
+        A room identifying the light's location.
+    Regions: An array of region objects, each with:
+        A name identifying the region.
+        An array of rooms within the region.
+
+Instructions for Model:
+
+    All-Inclusive Light Adjustment: When processing an instruction, it is imperative that you apply the changes to every single light mentioned in the initial count. If the instruction involves changing colors, ensure that every light is accounted for in the lightStates array, with no light left unchanged unless specified by the instruction.
+
+    Explicit Distribution and Grouping: For instructions involving multiple colors or distribution patterns (e.g., "one color per light", "all lights to the color of the ocean"), explicitly organize the lights into groups as instructed, ensuring that:
+        Each color specified forms exactly one group, with no duplicate groups for the same color.
+        All lights are included in the distribution, following the user's instructions for equal distribution or specific patterns.
+        If equal distribution is requested, ensure that the lights are divided as evenly as possible among the colors, with any remainder lights grouped according to the user's preference.
+        A light can only belong to one group.
+
+    JSON Format for Responses: Structure your responses in JSON, including:
+        An instructionInterpretation section summarizing the user's request.
+        An explanation providing rationale behind the grouping or color assignment.
+        A logic section detailing the approach taken to implement the instruction.
+        The lightStates array, with each entry detailing the state changes for groups of lights or individual lights, adhering to the distribution rules.
+
+Instructions for Model:
+
+    Format All Responses in JSON: When providing explanations, clarifications, or any form of response, encapsulate your text within a JSON structure. This includes:
+        The instruction interpretation.
+        The logic or reasoning behind the grouping or color assignment.
+        The final state of each light or group of lights after applying the instructions.
+
+    Use Specific JSON Keys for Textual Information: For any explanatory text, use designated keys: "explanation" and "logic". This will allow for easy parsing and understanding of the response structure.
+    Each color object is constructed of "state", "idList", and "colorName" keys. The "state" key contains an array of 6 integers, the "idList" key contains an array of light IDs, and the "colorName" key contains the name of the color.
+
+Output JSON Example:
+
+{
+  "lightStates": [
+    {
+      "state": [35, 0, 102, 204, 0, 0],
+      "idList": ["ABC123", "DEF456", "HIJ789", "KLM012", "NOP345"],
+      "colorName: "ocean"
+    }
+    {
+        "state": [35, 0, 102, 204, 0, 0],
+        "idList": ["QRS678", "TUV901", "WXY234", "ZAB567", "CDE890"],
+        "colorName: "mars"
+      }
+      {
+        "state": [35, 0, 102, 204, 0, 0],
+        "idList": ["FGH123", "IJK456", "LMN789", "OPQ012", "RST345", "UVW678"]
+        "colorName: "frog"
+      }
+    "requestedChangedStatesCount": 16,
+    "responseLightStatesCount": 16
+  ],
+  "instructionInterpretation": "The user wants three lights to be set to the color of the ocean.",
+  "explanation": "All 3 lights have been grouped according to the color of the ocean...",
+  "logic": "Given the instruction to set all lights to a single color, each light's state was adjusted accordingly...",
+  groupLogic: {
+    "totalLights": 16,
+    "totalGroups": 3,
+    "modulus": 1,
+    "grouping": [5,5,6,
+    "reasoning": "The lights were divided into 3 groups. The number of lights per group was calculated by dividing the total lights (16) by the number of colors specified (3) and adding the modulus (1) to the final color."
+  }
+}
+
+Clarification on Handling Colors and Groups:
+    Ensure it is clear that each color must result in only one group and that the distribution must cover all lights, either equally among the colors or as per any specific pattern requested. 
+    It is crucial to reiterate the expectation that the responseLightStatesCount should reflect the actual number of lights modified, ensuring completeness of the response. 
+    `,
+
 					// Your initial instructions here
 				},
 				{
 					role: 'user',
 					content: `{
-                        "lightStates": ${JSON.stringify(currlightStates)},
-                        "userInstruction": "${userInstruction}"
+                        "homeInformation": ${JSON.stringify(currlightStates)},
+                        "userInstruction": "${userInstruction}",
+                        "totalLights": ${controllers.size}
                     }`,
 				},
 			],
 		})
 		.then(async (response) => {
 			const messageContent = response.choices[0].message.content as string;
-			const messageContentJSON = await JSON.parse(messageContent);
-			console.log(messageContentJSON);
-			const arr = messageContentJSON['updatedArr'];
-			// deviceInterface.arrayToCommand(arr);
-			currlightStates.lightStates = arr;
-			instructionsSent = true;
+			console.log('messageContent', messageContent);
+			const messageContentJSON = await parseJSONLeniently(messageContent);
+
 			return messageContentJSON;
 		})
 		.catch((error) => {
@@ -229,15 +222,66 @@ const PORT = 3000;
 app.use(express.json());
 app.use(cors()); // Enable CORS for all routes.
 
-app.post('/api/setColor', (req, res) => {
-	const { userInstruction } = req.body;
+app.get('/api/test', async (req, res) => {
+	// const simpleControllers = await setupControllers();
+	// res.send(JSON.stringify(simpleControllers));
+	res.send('works');
+});
 
+app.get('/api/getLights', async (req, res) => {
+	const simpleControllers = await setupControllers();
+	res.send(JSON.stringify(simpleControllers));
+
+	// res.send("works")
+});
+app.get('/api/setColor/:userInstruction', (req, res) => {
+	const { userInstruction } = req.params;
+	console.log('userInstruction', userInstruction);
 	sendToOpenAI(userInstruction)
 		.then((response) => {
-			console.log('returning response', response);
-			res.send({
-				message: 'Success',
-				data: response, // Send the actual response data
+			if (response) {
+				console.log('returning response', response.lightStates);
+				response.lightStates.forEach((group: any) => {
+					group.idList.forEach((lightId: string) => {
+						const controller = controllers.get(lightId);
+						if (controller) {
+							const arr = group.state;
+							// console.log('arr', arr);
+							controller.setArrayValues(arr);
+						}
+					});
+				});
+				return response;
+			}
+		})
+		.then(async (respose) => {
+			// Generate HTML content with the JSON response
+			const htmlResponse = `
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Set Color Response</title>
+    </head>
+    <body>
+        <h1>Color Set</h1>
+        <p>${JSON.stringify(respose.instructionInterpretation)}</p>
+        
+        <pre>${JSON.stringify(
+					respose.logic.reasoning
+				)}</pre> <!-- Display the JSON response here -->
+
+        <pre>${JSON.stringify(respose.lightStates)}</pre> <!-- Display the JSON response here -->
+    </body>
+    </html>
+    `;
+			res.send(htmlResponse);
+			new Promise((resolve) => {
+				setTimeout(async () => {
+					await setupControllers().then((lightStates) => {
+						currlightStates.lightStates = lightStates;
+						// console.log('lightStates', JSON.stringify(currlightStates));
+					});
+				}, 5000);
 			});
 		})
 		.catch((error) => {
@@ -247,6 +291,21 @@ app.post('/api/setColor', (req, res) => {
 			});
 		});
 });
-app.listen(PORT, () => {
-	console.log(`Server is running on http://localhost:${PORT}`);
-});
+
+function startServer() {
+	app.listen(PORT, () => {
+		console.log(`Server is running on http://localhost:${PORT}`);
+	});
+}
+
+function parseJSONLeniently(jsonString: string) {
+	// First, remove potential comments (both single line and multi-line).
+	// This is a basic approach and might need adjustments for complex cases.
+	var noCommentsString = jsonString.replace(/\/\/.*?[\r\n]|\/\*.*?\*\//gs, '');
+
+	// Then, fix trailing commas before closing brackets or braces.
+	var fixedJsonString = noCommentsString.replace(/,\s*([\]}])/g, '$1');
+
+	// Finally, attempt to parse the cleaned JSON string.
+	return JSON.parse(fixedJsonString);
+}
